@@ -150,7 +150,7 @@ export class TransferxHandler {
             ret = await this.transferRing(api, account, address, amount);
             break;
         }
-        console.log(`[${seq}/${len}] [${tryTimes + 1}] ==> [hash]: ${ret.hash}`);
+        console.log(`              [hash]: ${ret.hash}`);
         rets.push(ret);
         index += 1;
         await Timeout.set(this.duration);
@@ -169,7 +169,7 @@ export class TransferxHandler {
     address: string,
     amount: number
   ): Promise<TransferredData> {
-    const ex = api.tx.balances.transfer(
+    const ex = api.tx.kton.transfer(
       address, amount * PRECISION
     );
     await ex.signAndSend(account);
