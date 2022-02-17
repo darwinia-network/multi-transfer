@@ -115,11 +115,11 @@ export class TransferxHandler {
 
     const rets: TransferredData[] = [];
     while (true) {
-      const seq = index + 1;
       if (index >= len) {
-        console.log(colors.green(`[${seq}/${len}] Transfer over`));
+        console.log(colors.green(`[${index}/${len}] Transfer over`));
         break;
       }
+      const seq = index + 1;
       const target = this.targets[index];
       const {coin, address, amount} = target;
 
