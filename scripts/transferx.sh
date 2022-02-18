@@ -10,7 +10,6 @@ SEED=${SEED:-0x1}
 
 ${WORK_PATH}/multi-transfer.sh transferx \
   --seed ${SEED} \
-  --file ./data/transferx.csv \
-  --target 2gtx
+  --file ./data/transferx.csv
 
 
