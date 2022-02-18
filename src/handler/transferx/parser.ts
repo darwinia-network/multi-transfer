@@ -38,10 +38,10 @@ export class TargetParser {
           console.log(colors.yellow('Missing address. skip this'));
           return false;
         }
-        if (address.length != 48) {
-          console.log(colors.yellow('Wrong address: %s'), address);
-          return false;
-        }
+        // if (address.length != 48) {
+        //   console.log(colors.yellow('Wrong address: %s'), address);
+        //   return false;
+        // }
         const coin = item.coin;
         if (is.not.truthy(coin)) {
           console.log(colors.yellow('Missing coin, skip this'));
@@ -89,6 +89,7 @@ export class TargetParser {
                 address: row[0],
                 coin: row[1],
                 amount: row[2],
+                format: row[3],
               });
             } catch (e) {
               console.error(e);

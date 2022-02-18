@@ -2,10 +2,13 @@ import {TargetParser} from './parser'
 import {ApiPromise, HttpProvider} from "@polkadot/api";
 import {Keyring} from "@polkadot/keyring";
 import {KeyringPair} from "@polkadot/keyring/types";
-import {Coin, TransferReceiver} from "../../types/transfer";
+import {decodeAddress, encodeAddress} from '@polkadot/util-crypto';
+import {u8aToHex} from '@polkadot/util';
+import {AddressFormat, Coin, TransferReceiver} from "../../types/transfer";
 import Timeout from 'await-timeout';
 import Stream from 'streamjs';
 import is from 'is_js';
+import {promises as fs} from 'fs';
 
 const colors = require('colors');
 
@@ -58,26 +61,36 @@ export class TransferxHandler {
       .filter(item => item.err == 0)
       .toArray();
     console.log('------- FAILED');
+    const failedOutput = [];
     Stream(faileds)
       .forEach(item => {
-        const {message, address, amount, coin} = item;
-        if (is.truthy(address)) {
-          console.log(`[${coin}] -> ${address} [${amount}]: ${colors.red(message)}`);
+        const {message, receiver} = item;
+        if (is.truthy(receiver)) {
+          console.log(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${colors.red(message)}`);
+          failedOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
         } else {
           console.log(colors.red(message));
         }
       })
     console.log('------- OK');
+    const okOutput = [];
     Stream(oks)
       .forEach(item => {
         const {
-          address,
-          amount,
-          coin,
+          receiver,
           hash,
         } = item;
-        console.log(colors.green(`[${coin}] -> ${address} [${amount}]: ${hash}`));
+        console.log(colors.green(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${hash}`));
+        okOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
       });
+    if (failedOutput.length > 0) {
+      await fs.writeFile('fail.csv', failedOutput.join('\n'));
+      console.log(colors.yellow('Accounts successfully transferred are written to the fail.csv file'));
+    }
+    if (okOutput.length > 0) {
+      await fs.writeFile('ok.csv', okOutput.join('\n'));
+      console.log(colors.yellow('Accounts successfully transferred are written to the ok.csv file'));
+    }
   }
 
   private async api(): Promise<ApiPromise> {
@@ -100,10 +113,8 @@ export class TransferxHandler {
       return [{
         err: 1,
         message: 'Not receiver data.',
-        address: undefined,
-        amount: undefined,
         hash: undefined,
-        coin: Coin.ring,
+        receiver: undefined,
       }];
     }
 
@@ -121,41 +132,54 @@ export class TransferxHandler {
       }
       const seq = index + 1;
       const target = this.targets[index];
-      const {coin, address, amount} = target;
+      const {coin, address, amount, format} = target;
+      let _address = address;
+      if (is.truthy(format)) {
+        switch (format) {
+          case AddressFormat.kusama:
+            const publicKey = u8aToHex(decodeAddress(address));
+            _address = encodeAddress(publicKey, 42);
+            break;
+          case AddressFormat.crab:
+          default:
+            break;
+        }
+      }
+
+      const viewAddress = address === _address ? address : address + ' -> ' + _address;
 
       if (tryTimes !== 0) {
         if (tryTimes >= maxTry) {
           tryTimes = 0;
           index += 1;
-          console.log(colors.yellow(`[${seq}/${len}] The address [${address}] is try sent many times (${maxTry}). skip this.`));
+          console.log(colors.yellow(`[${seq}/${len}] The address [${viewAddress}] is try sent many times (${maxTry}). skip this.`));
           rets.push({
-            address: address,
-            amount: amount,
-            coin: coin,
             err: 1,
             hash: undefined,
             message: `[${seq}/${len}] Transfer failed`,
+            receiver: target,
           });
           continue;
         }
       }
       try {
         let ret;
-        console.log(colors.green(`[${seq}/${len}] [${tryTimes + 1}] --> [${coin}] ${address} [${amount}]`));
+        console.log(colors.green(`[${seq}/${len}] [${tryTimes + 1}] --> [${coin}] ${viewAddress} [${amount}]`));
         switch (coin) {
           case Coin.kton:
-            ret = await this.transferKton(api, account, address, amount);
+            ret = await this.transferKton(api, account, target, _address);
             break;
           case Coin.ring:
-            ret = await this.transferRing(api, account, address, amount);
+            ret = await this.transferRing(api, account, target, _address);
             break;
         }
         console.log(`              [hash]: ${ret.hash}`);
         rets.push(ret);
         index += 1;
+        tryTimes = 0;
         await Timeout.set(this.duration);
       } catch (e) {
-        console.error(`[${seq}/${len}] Transfer failed will retry current receiver: [${address}]. the error message: ${e.message}`);
+        console.error(`[${seq}/${len}] Transfer failed will retry current receiver: [${viewAddress}]. the error message: ${e.message}`);
         // api = await this.api();
         tryTimes += 1;
       }
@@ -166,39 +190,37 @@ export class TransferxHandler {
   private async transferKton(
     api: ApiPromise,
     account: KeyringPair,
+    target: TransferReceiver,
     address: string,
-    amount: number
   ): Promise<TransferredData> {
     const ex = api.tx.kton.transfer(
-      address, amount * PRECISION
+      address, target.amount * PRECISION
     );
     await ex.signAndSend(account);
     const hash = ex.hash.toString();
-    return {address, amount, hash, coin: Coin.kton, err: 0, message: undefined};
+    return {hash, receiver: target, err: 0, message: undefined};
   }
 
   private async transferRing(
     api: ApiPromise,
     account: KeyringPair,
+    target: TransferReceiver,
     address: string,
-    amount: number
   ): Promise<TransferredData> {
     const ex = api.tx.balances.transfer(
-      address, amount * PRECISION
+      address, target.amount * PRECISION
     );
     await ex.signAndSend(account);
     const hash = ex.hash.toString();
-    return {address, amount, hash, coin: Coin.ring, err: 0, message: undefined};
+    return {hash, receiver: target, err: 0, message: undefined};
   }
 
 
 }
 
 interface TransferredData {
-  address: String | undefined;
-  amount: number | undefined;
   hash: string | undefined;
-  coin: Coin | undefined;
   err: number;
   message: string | undefined;
+  receiver: TransferReceiver | undefined;
 }
