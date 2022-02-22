@@ -10,6 +10,8 @@ import Stream from 'streamjs';
 import is from 'is_js';
 import {promises as fs} from 'fs';
 
+import {typesBundleForPolkadotApps} from '@darwinia/types/mix';
+
 const colors = require('colors');
 
 const PRECISION = 1000000000;
@@ -83,20 +85,17 @@ export class TransferxHandler {
         console.log(colors.green(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${hash}`));
         okOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
       });
-    if (failedOutput.length > 0) {
-      await fs.writeFile('fail.csv', failedOutput.join('\n'));
-      console.log(colors.yellow('Accounts successfully transferred are written to the fail.csv file'));
-    }
-    if (okOutput.length > 0) {
-      await fs.writeFile('ok.csv', okOutput.join('\n'));
-      console.log(colors.yellow('Accounts successfully transferred are written to the ok.csv file'));
-    }
+    await fs.writeFile('fail.csv', failedOutput.join('\n'));
+    console.log(colors.yellow('Accounts failed transferred are written to the fail.csv file'));
+
+    await fs.writeFile('ok.csv', okOutput.join('\n'));
+    console.log(colors.yellow('Accounts successfully transferred are written to the ok.csv file'));
   }
 
   private async api(): Promise<ApiPromise> {
     return await ApiPromise.create({
       provider: new HttpProvider(this.endpoint),
-      // types: config.types,
+      typesBundle: typesBundleForPolkadotApps,
     });
   }
 
@@ -165,6 +164,7 @@ export class TransferxHandler {
       try {
         let ret;
         console.log(colors.green(`[${seq}/${len}] [${tryTimes + 1}] --> [${coin}] ${viewAddress} [${amount}]`));
+        // console.log(account.toJson());
         switch (coin) {
           case Coin.kton:
             ret = await this.transferKton(api, account, target, _address);
