@@ -11,6 +11,7 @@ export enum AddressFormat {
 
 export interface TransferReceiver {
   address: string;
+  receiverAddress: string | undefined;
   coin: Coin;
   amount: number;
   format: AddressFormat | undefined,

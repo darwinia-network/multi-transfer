@@ -64,6 +64,7 @@ export class TargetParser {
   }
 
   private parseTarget(): TransferReceiver[] {
+    if (is.not.truthy(this.target)) return [];
     const targets = TargetParser.splitText(this.target);
     return Stream(targets)
       .map(item => {
@@ -73,6 +74,7 @@ export class TargetParser {
   }
 
   private async parseFile(): Promise<TransferReceiver[]> {
+    if (is.not.truthy(this.file)) return [];
     return new Promise((resolve, reject) => {
       try {
         const inputStream = Fs.createReadStream(this.file, 'utf8');
@@ -90,6 +92,7 @@ export class TargetParser {
                 coin: row[1],
                 amount: row[2],
                 format: row[3],
+                receiverAddress: undefined,
               });
             } catch (e) {
               console.error(e);

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import yargs from 'yargs';
 import transferxCommand from './command/transferx'
+import convertAddressCommand from './command/convert_address'
 
 import '@polkadot/api-augment'
 
@@ -17,6 +18,7 @@ import '@polkadot/api-augment'
     .help('help').alias('help', 'h')
     .version('version', '0.1').alias('version', 'V')
     .command(transferxCommand)
+    .command(convertAddressCommand)
     .argv;
 
   // show help if no input
