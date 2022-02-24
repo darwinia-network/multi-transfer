@@ -10,6 +10,7 @@ import Stream from 'streamjs';
 import is from 'is_js';
 import {promises as fs} from 'fs';
 import * as helpers from "../../patch/helpers";
+import BigNumber from "bignumber.js";
 
 import {typesBundleForPolkadotApps} from '@darwinia/types/mix';
 
@@ -54,6 +55,9 @@ export class TransferxHandler {
   }
 
   public async handle() {
+    await fs.writeFile('ok.csv', '');
+    await fs.writeFile('fail.csv', '');
+
     const result = await this.transfer();
     console.log(colors.green(`Done sent to ${result.length} person.`));
     console.log(colors.green('REPORTS'));
@@ -90,10 +94,10 @@ export class TransferxHandler {
           okOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
         });
       });
-    await fs.writeFile('fail.csv', failedOutput.join('\n'));
+    // await fs.writeFile('fail.csv', failedOutput.join('\n'));
     console.log(colors.yellow('Accounts failed transferred are written to the fail.csv file'));
 
-    await fs.writeFile('ok.csv', okOutput.join('\n'));
+    // await fs.writeFile('ok.csv', okOutput.join('\n'));
     console.log(colors.yellow('Accounts successfully transferred are written to the ok.csv file'));
   }
 
@@ -148,7 +152,7 @@ export class TransferxHandler {
         };
       })
       .toArray();
-    const parts = helpers.splitArray(allReceivers, 3);
+    const parts = helpers.splitArray(allReceivers, 100);
 
 
     const rets: TransferredData[] = [];
@@ -174,12 +178,13 @@ export class TransferxHandler {
           const txPool = Stream(batches)
             .map(item => {
               const _address = item.receiverAddress || item.address;
-              console.log(colors.green(`[${seq}/${total}] Send to ${item.address} [${item.coin}] ${item.amount}`));
+              const value = new BigNumber(item.amount).times(PRECISION);
+              console.log(colors.green(`[${seq}/${total}] Send to ${item.address} [${item.coin}] ${value.toString()}`));
               switch (item.coin) {
                 case Coin.kton:
-                  return api.tx.kton.transfer(_address, item.amount * PRECISION);
+                  return api.tx.kton.transfer(_address, value.toString());
                 case Coin.ring:
-                  return api.tx.balances.transfer(_address, item.amount * PRECISION);
+                  return api.tx.balances.transfer(_address, value.toString());
                 default:
                   return null;
               }
@@ -202,25 +207,29 @@ export class TransferxHandler {
           const okRing = Stream(batches)
             .filter(item => item.coin ===Coin.ring)
             .filter(item => Stream(sentTx.eRing)
-              .noneMatch(er => er.address === (item.receiverAddress || item.address) && er.value === (item.amount * PRECISION)))
+              .noneMatch(er => er.address === (item.receiverAddress || item.address) && er.value.toString() === (new BigNumber(item.amount).times(PRECISION).toString())))
             .toArray();
           const okKton = Stream(batches)
             .filter(item => item.coin ===Coin.kton)
             .filter(item => Stream(sentTx.eKton)
-              .noneMatch(er => er.address === (item.receiverAddress || item.address) && er.value === (item.amount * PRECISION)))
+              .noneMatch(er => er.address === (item.receiverAddress || item.address) && er.value.toString() === (new BigNumber(item.amount).times(PRECISION).toString())))
             .toArray();
 
           console.log(`[${seq}/${total}] hash: ${colors.cyan(sentTx.hash)}`);
 
           if (okRing.length === 0 && okKton.length === 0) {
+            await fs.appendFile('ok.csv', batches.join('\n'));
             rets.push({err: 0, hash: sentTx.hash, message: undefined, receivers: batches});
           }
 
           if (okRing.length > 0) {
             console.log(colors.yellow(`[${seq}/${total}] Failed transfer ring`));
+            await fs.appendFile('fail.csv', okRing.join('\n'));
             rets.push({err: 1, hash: sentTx.hash, message: `[${seq}/${total}] Failed transfer ring`, receivers: okRing});
           }
           if(okKton.length > 0) {
+            console.log(colors.yellow(`[${seq}/${total}] Failed transfer kton`));
+            await fs.appendFile('fail.csv', okKton.join('\n'));
             rets.push({err: 1, hash: sentTx.hash, message: `[${seq}/${total}] Failed transfer kton`, receivers: okKton});
           }
 
