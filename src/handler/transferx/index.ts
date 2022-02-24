@@ -1,5 +1,5 @@
 import {TargetParser} from './parser'
-import {ApiPromise, HttpProvider} from "@polkadot/api";
+import {ApiPromise, WsProvider} from "@polkadot/api";
 import {Keyring} from "@polkadot/keyring";
 import {KeyringPair} from "@polkadot/keyring/types";
 import {decodeAddress, encodeAddress} from '@polkadot/util-crypto';
@@ -9,6 +9,7 @@ import Timeout from 'await-timeout';
 import Stream from 'streamjs';
 import is from 'is_js';
 import {promises as fs} from 'fs';
+import * as helpers from "../../patch/helpers";
 
 import {typesBundleForPolkadotApps} from '@darwinia/types/mix';
 
@@ -66,10 +67,12 @@ export class TransferxHandler {
     const failedOutput = [];
     Stream(faileds)
       .forEach(item => {
-        const {message, receiver} = item;
-        if (is.truthy(receiver)) {
-          console.log(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${colors.red(message)}`);
-          failedOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
+        const {message, receivers} = item;
+        if (receivers.length != 0) {
+          receivers.forEach(receiver => {
+            console.log(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${colors.red(message)}`);
+            failedOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
+          });
         } else {
           console.log(colors.red(message));
         }
@@ -79,11 +82,13 @@ export class TransferxHandler {
     Stream(oks)
       .forEach(item => {
         const {
-          receiver,
+          receivers,
           hash,
         } = item;
-        console.log(colors.green(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${hash}`));
-        okOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
+        receivers.forEach(receiver => {
+          console.log(colors.green(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${hash}`));
+          okOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
+        });
       });
     await fs.writeFile('fail.csv', failedOutput.join('\n'));
     console.log(colors.yellow('Accounts failed transferred are written to the fail.csv file'));
@@ -94,7 +99,8 @@ export class TransferxHandler {
 
   private async api(): Promise<ApiPromise> {
     return await ApiPromise.create({
-      provider: new HttpProvider(this.endpoint),
+      // provider: new HttpProvider(this.endpoint),
+      provider: new WsProvider(this.endpoint),
       typesBundle: typesBundleForPolkadotApps,
     });
   }
@@ -106,121 +112,187 @@ export class TransferxHandler {
   }
 
   private async transfer(): Promise<TransferredData[]> {
-    let index = 0;
     let len = this.targets.length;
     if (len == 0) {
       return [{
         err: 1,
         message: 'Not receiver data.',
         hash: undefined,
-        receiver: undefined,
+        receivers: [],
       }];
     }
 
-    const api = await this.api();
+    let api = await this.api();
     const account = this.account();
 
-    const maxTry = 5;
-    let tryTimes = 0;
+
+
+    const allReceivers = Stream(this.targets)
+      .map(item => {
+        const {address, format} = item;
+        let _address;
+        if (is.truthy(format)) {
+          switch (format) {
+            case AddressFormat.kusama:
+              const publicKey = u8aToHex(decodeAddress(address));
+              _address = encodeAddress(publicKey, 42);
+              break;
+            case AddressFormat.crab:
+            default:
+              break;
+          }
+        }
+        return {
+          ...item,
+          receiverAddress: _address,
+        };
+      })
+      .toArray();
+    const parts = helpers.splitArray(allReceivers, 3);
+
 
     const rets: TransferredData[] = [];
-    while (true) {
-      if (index >= len) {
-        console.log(colors.green(`[${index}/${len}] Transfer over`));
-        break;
-      }
+
+    const maxTry = 3;
+    let tryTimes = 0;
+    const total = parts.length;
+    let index = 0;
+    for (const batches of parts) {
       const seq = index + 1;
-      const target = this.targets[index];
-      const {coin, address, amount, format} = target;
-      let _address = address;
-      if (is.truthy(format)) {
-        switch (format) {
-          case AddressFormat.kusama:
-            const publicKey = u8aToHex(decodeAddress(address));
-            _address = encodeAddress(publicKey, 42);
-            break;
-          case AddressFormat.crab:
-          default:
-            break;
+      while (true) {
+
+        if (tryTimes !== 0) {
+          if (tryTimes >= maxTry) {
+            tryTimes = 0;
+            continue;
+          }
         }
-      }
 
-      const viewAddress = address === _address ? address : address + ' -> ' + _address;
+        let ex;
+        try {
 
-      if (tryTimes !== 0) {
-        if (tryTimes >= maxTry) {
+          const txPool = Stream(batches)
+            .map(item => {
+              const _address = item.receiverAddress || item.address;
+              console.log(colors.green(`[${seq}/${total}] Send to ${item.address} [${item.coin}] ${item.amount}`));
+              switch (item.coin) {
+                case Coin.kton:
+                  return api.tx.kton.transfer(_address, item.amount * PRECISION);
+                case Coin.ring:
+                  return api.tx.balances.transfer(_address, item.amount * PRECISION);
+                default:
+                  return null;
+              }
+            })
+            .filter(item => !!item)
+            .toArray();
+          ex = api.tx.utility.batch(txPool);
+
+        } catch (e) {
+          console.error(colors.red(`[${seq}/${total}] ${e.message}`));
+          rets.push({err: 1, hash: undefined, message: `[${seq}/${total}] Filed to build transactions: ${e.message}`, receivers: batches});
           tryTimes = 0;
-          index += 1;
-          console.log(colors.yellow(`[${seq}/${len}] The address [${viewAddress}] is try sent many times (${maxTry}). skip this.`));
-          rets.push({
-            err: 1,
-            hash: undefined,
-            message: `[${seq}/${len}] Transfer failed`,
-            receiver: target,
-          });
-          continue;
+          break;
         }
-      }
-      try {
-        let ret;
-        console.log(colors.green(`[${seq}/${len}] [${tryTimes + 1}] --> [${coin}] ${viewAddress} [${amount}]`));
-        // console.log(account.toJson());
-        switch (coin) {
-          case Coin.kton:
-            ret = await this.transferKton(api, account, target, _address);
-            break;
-          case Coin.ring:
-            ret = await this.transferRing(api, account, target, _address);
-            break;
+
+        try {
+
+          const sentTx = await this.safeSendTx(account, ex);
+          // console.log(sentTx);
+          const okRing = Stream(batches)
+            .filter(item => item.coin ===Coin.ring)
+            .filter(item => Stream(sentTx.eRing)
+              .noneMatch(er => er.address === (item.receiverAddress || item.address) && er.value === (item.amount * PRECISION)))
+            .toArray();
+          const okKton = Stream(batches)
+            .filter(item => item.coin ===Coin.kton)
+            .filter(item => Stream(sentTx.eKton)
+              .noneMatch(er => er.address === (item.receiverAddress || item.address) && er.value === (item.amount * PRECISION)))
+            .toArray();
+
+          console.log(`[${seq}/${total}] hash: ${colors.cyan(sentTx.hash)}`);
+
+          if (okRing.length === 0 && okKton.length === 0) {
+            rets.push({err: 0, hash: sentTx.hash, message: undefined, receivers: batches});
+          }
+
+          if (okRing.length > 0) {
+            console.log(colors.yellow(`[${seq}/${total}] Failed transfer ring`));
+            rets.push({err: 1, hash: sentTx.hash, message: `[${seq}/${total}] Failed transfer ring`, receivers: okRing});
+          }
+          if(okKton.length > 0) {
+            rets.push({err: 1, hash: sentTx.hash, message: `[${seq}/${total}] Failed transfer kton`, receivers: okKton});
+          }
+
+          tryTimes = 0;
+          await Timeout.set(this.duration);
+          break;
+        } catch (e) {
+          console.error(`[${seq}/${total}] Transfer failed, will retry it. ${e.message}`);
+          tryTimes += 1;
+          await api.disconnect();
+          api = await this.api();
         }
-        console.log(`              [hash]: ${ret.hash}`);
-        rets.push(ret);
-        index += 1;
-        tryTimes = 0;
-        await Timeout.set(this.duration);
-      } catch (e) {
-        console.error(`[${seq}/${len}] Transfer failed will retry current receiver: [${viewAddress}]. the error message: ${e.message}`);
-        // api = await this.api();
-        tryTimes += 1;
+
       }
+      index += 1;
+      console.log(colors.blue(`[${seq}/${total}] ------`));
     }
+    await api.disconnect();
     return rets;
   }
 
-  private async transferKton(
-    api: ApiPromise,
+  private async safeSendTx(
     account: KeyringPair,
-    target: TransferReceiver,
-    address: string,
-  ): Promise<TransferredData> {
-    const ex = api.tx.kton.transfer(
-      address, target.amount * PRECISION
-    );
-    await ex.signAndSend(account);
-    const hash = ex.hash.toString();
-    return {hash, receiver: target, err: 0, message: undefined};
+    ex: any,
+  ): Promise<ExReceipt> {
+    return await new Promise((resolve, reject) => {
+      let unsub;
+      ex.signAndSend(account, ({events = [], status}) => {
+        if (!status.isFinalized)
+          return;
+
+        const checkRings = [];
+        const checkKtons = [];
+        events.forEach(({phase, event: {data, method, section}}) => {
+          // console.log(phase.toString() + ' : ' + section + '.' + method + ' ' + data.toString());
+          const rto = JSON.parse(data.toString());
+          if (section === 'balances' && method === 'Transfer') {
+            checkRings.push({address: rto[1], value: rto[2]});
+          }
+          if (section === 'kton' && method === 'Transfer') {
+            checkKtons.push({address: rto[1], value: rto[2]});
+          }
+        });
+        if (unsub) {
+          unsub();
+        }
+        resolve({
+          hash: ex.hash.toString(),
+          eRing: checkRings,
+          eKton: checkKtons,
+        });
+      }).then(v => unsub = v)
+        .catch(reject);
+    });
   }
 
-  private async transferRing(
-    api: ApiPromise,
-    account: KeyringPair,
-    target: TransferReceiver,
-    address: string,
-  ): Promise<TransferredData> {
-    const ex = api.tx.balances.transfer(
-      address, target.amount * PRECISION
-    );
-    await ex.signAndSend(account);
-    const hash = ex.hash.toString();
-    return {hash, receiver: target, err: 0, message: undefined};
-  }
+}
 
+interface ExReceipt {
+  hash: string;
+  eRing: BalanceReceipt[],
+  eKton: BalanceReceipt[],
+}
 
+interface BalanceReceipt {
+  address: string;
+  value: number;
 }
 
 interface TransferredData {
   hash: string | undefined;
   err: number;
   message: string | undefined;
-  receiver: TransferReceiver | undefined;
+  receivers: TransferReceiver[];
 }
