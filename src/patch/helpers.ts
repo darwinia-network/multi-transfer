@@ -21,17 +21,17 @@ export function convertAddress(originalFormat: AddressFormat,
 function convertFromKusama(targetFormat: AddressFormat,
                            targets: string[],) {
   let prefix;
-  switch (this.targetFormat) {
+  switch (targetFormat) {
     case AddressFormat.kusama:
       return targets;
     case AddressFormat.crab:
       prefix = 42;
       break;
     default:
-      console.log(colors.red(`Not support convert from kusama to ${this.targetFormat}`));
+      console.log(colors.red(`Not support convert from kusama to ${targetFormat}`));
       return null;
   }
-  return Stream(this.targets)
+  return Stream(targets)
     .map(item => {
       const publicKey = u8aToHex(decodeAddress(item));
       return {

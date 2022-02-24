@@ -163,7 +163,7 @@ export class TransferxHandler {
         };
       })
       .toArray();
-    const parts = helpers.splitArray(allReceivers, 3);
+    const parts = helpers.splitArray(allReceivers, 100);
 
 
     const rets: TransferredData[] = [];

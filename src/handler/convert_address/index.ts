@@ -35,7 +35,7 @@ export class ConvertAddressHandler {
     }
     let index = 0;
     for (const item of rets) {
-      const original = this.originalFormat[index];
+      const original = this.targets[index];
       console.log(`${original},${item}`);
     }
   }
