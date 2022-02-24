@@ -1,5 +1,5 @@
 import {TargetParser} from './parser'
-import {ApiPromise, HttpProvider, WsProvider} from "@polkadot/api";
+import {ApiPromise, WsProvider} from "@polkadot/api";
 import {Keyring} from "@polkadot/keyring";
 import {KeyringPair} from "@polkadot/keyring/types";
 import {decodeAddress, encodeAddress} from '@polkadot/util-crypto';
@@ -122,13 +122,10 @@ export class TransferxHandler {
       }];
     }
 
-    const api = await this.api();
+    let api = await this.api();
     const account = this.account();
 
 
-
-    const maxTry = 3;
-    let tryTimes = 0;
 
     const allReceivers = Stream(this.targets)
       .map(item => {
@@ -155,20 +152,18 @@ export class TransferxHandler {
 
 
     const rets: TransferredData[] = [];
+
+    const maxTry = 3;
+    let tryTimes = 0;
+    const total = parts.length;
+    let index = 0;
     for (const batches of parts) {
+      const seq = index + 1;
       while (true) {
 
         if (tryTimes !== 0) {
           if (tryTimes >= maxTry) {
             tryTimes = 0;
-            // index += 1;
-            // console.log(colors.yellow(`[${seq}/${len}] The address [${viewAddress}] is try sent many times (${maxTry}). skip this.`));
-            // rets.push({
-            //   err: 1,
-            //   hash: undefined,
-            //   message: `[${seq}/${len}] Transfer failed`,
-            //   receivers: [...batches],
-            // });
             continue;
           }
         }
@@ -178,11 +173,13 @@ export class TransferxHandler {
 
           const txPool = Stream(batches)
             .map(item => {
+              const _address = item.receiverAddress || item.address;
+              console.log(colors.green(`[${seq}/${total}] Send to ${item.address} [${item.coin}] ${item.amount}`));
               switch (item.coin) {
                 case Coin.kton:
-                  return api.tx.kton.transfer(item.receiverAddress || item.address, item.amount * PRECISION);
+                  return api.tx.kton.transfer(_address, item.amount * PRECISION);
                 case Coin.ring:
-                  return api.tx.balances.transfer(item.receiverAddress || item.address, item.amount * PRECISION);
+                  return api.tx.balances.transfer(_address, item.amount * PRECISION);
                 default:
                   return null;
               }
@@ -191,26 +188,55 @@ export class TransferxHandler {
             .toArray();
           ex = api.tx.utility.batch(txPool);
 
-        } catch (e){
-          console.log(e);
+        } catch (e) {
+          console.error(colors.red(`[${seq}/${total}] ${e.message}`));
+          rets.push({err: 1, hash: undefined, message: `[${seq}/${total}] Filed to build transactions: ${e.message}`, receivers: batches});
+          tryTimes = 0;
           break;
         }
 
         try {
 
-          await this.safeSendTx(account, ex);
+          const sentTx = await this.safeSendTx(account, ex);
+          // console.log(sentTx);
+          const okRing = Stream(batches)
+            .filter(item => item.coin ===Coin.ring)
+            .filter(item => Stream(sentTx.eRing)
+              .noneMatch(er => er.address === (item.receiverAddress || item.address) && er.value === (item.amount * PRECISION)))
+            .toArray();
+          const okKton = Stream(batches)
+            .filter(item => item.coin ===Coin.kton)
+            .filter(item => Stream(sentTx.eKton)
+              .noneMatch(er => er.address === (item.receiverAddress || item.address) && er.value === (item.amount * PRECISION)))
+            .toArray();
 
+          console.log(`[${seq}/${total}] hash: ${colors.cyan(sentTx.hash)}`);
+
+          if (okRing.length === 0 && okKton.length === 0) {
+            rets.push({err: 0, hash: sentTx.hash, message: undefined, receivers: batches});
+          }
+
+          if (okRing.length > 0) {
+            console.log(colors.yellow(`[${seq}/${total}] Failed transfer ring`));
+            rets.push({err: 1, hash: sentTx.hash, message: `[${seq}/${total}] Failed transfer ring`, receivers: okRing});
+          }
+          if(okKton.length > 0) {
+            rets.push({err: 1, hash: sentTx.hash, message: `[${seq}/${total}] Failed transfer kton`, receivers: okKton});
+          }
 
           tryTimes = 0;
           await Timeout.set(this.duration);
           break;
         } catch (e) {
-          // console.error(`[${seq}/${len}] Transfer failed will retry current receiver: [${viewAddress}]. the error message: ${e.message}`);
-          // api = await this.api();
+          console.error(`[${seq}/${total}] Transfer failed, will retry it. ${e.message}`);
           tryTimes += 1;
+          await api.disconnect();
+          api = await this.api();
         }
 
       }
+      index += 1;
+      console.log(colors.blue(`[${seq}/${total}] ------`));
     }
     await api.disconnect();
     return rets;
@@ -219,85 +245,49 @@ export class TransferxHandler {
   private async safeSendTx(
     account: KeyringPair,
     ex: any,
-    ): Promise<void> {
-    const _ = await new Promise((resolve, reject) => {
+  ): Promise<ExReceipt> {
+    return await new Promise((resolve, reject) => {
       let unsub;
       ex.signAndSend(account, ({events = [], status}) => {
-        console.log(status.isFinalized);
         if (!status.isFinalized)
           return;
 
+        const checkRings = [];
+        const checkKtons = [];
         events.forEach(({phase, event: {data, method, section}}) => {
-          console.log(phase.toString() + ' : ' + section + '.' + method + ' ' + data.toString());
+          // console.log(phase.toString() + ' : ' + section + '.' + method + ' ' + data.toString());
+          const rto = JSON.parse(data.toString());
+          if (section === 'balances' && method === 'Transfer') {
+            checkRings.push({address: rto[1], value: rto[2]});
+          }
+          if (section === 'kton' && method === 'Transfer') {
+            checkKtons.push({address: rto[1], value: rto[2]});
+          }
         });
         if (unsub) {
           unsub();
         }
-        resolve(status.hash.toString());
-      }).then(v => unsub = v);
-    })
+        resolve({
+          hash: ex.hash.toString(),
+          eRing: checkRings,
+          eKton: checkKtons,
+        });
+      }).then(v => unsub = v)
+        .catch(reject);
+    });
   }
 
-  // private async transferKton(
-  //   api: ApiPromise,
-  //   account: KeyringPair,
-  //   receivers: TransferReceiver[],
-  // ): Promise<TransferredData> {
-  //   const txPool = Stream(receivers)
-  //     .map(item => api.tx.kton.transfer(item.receiverAddress || item.address, item.amount * PRECISION))
-  //     .toArray();
-  //   const ex = api.tx.utility.batch(txPool);
-  //
-  //   const hash = await new Promise((resolve, reject) => {
-  //     let unsub;
-  //     ex.signAndSend(account, ({events = [], status}) => {
-  //       console.log(status.isFinalized);
-  //       if (!status.isFinalized)
-  //         return;
-  //
-  //       events.forEach(({phase, event: {data, method, section}}) => {
-  //         console.log(phase.toString() + ' : ' + section + '.' + method + ' ' + data.toString());
-  //       });
-  //       if (unsub) {
-  //         unsub();
-  //       }
-  //       resolve(status.hash.toString());
-  //     }).then(v => unsub = v);
-  //   })
-  //   return {hash: hash.toString(), receivers: [...receivers], err: 0, message: undefined};
-  // }
-  //
-  // private async transferRing(
-  //   api: ApiPromise,
-  //   account: KeyringPair,
-  //   receivers: TransferReceiver[],
-  // ): Promise<TransferredData> {
-  //   const txPool = Stream(receivers)
-  //     .map(item => api.tx.balances.transfer(item.receiverAddress || item.address, item.amount * PRECISION))
-  //     .toArray();
-  //   const ex = api.tx.utility.batch(txPool);
-  //
-  //   const hash = await new Promise((resolve, reject) => {
-  //     let unsub;
-  //     ex.signAndSend(account, ({events = [], status}) => {
-  //       console.log(status.isFinalized);
-  //       if (!status.isFinalized)
-  //         return;
-  //
-  //       events.forEach(({phase, event: {data, method, section}}) => {
-  //         console.log(phase.toString() + ' : ' + section + '.' + method + ' ' + data.toString());
-  //       });
-  //       if (unsub) {
-  //         unsub();
-  //       }
-  //       resolve(status.hash.toString());
-  //     }).then(v => unsub = v);
-  //   })
-  //   console.log(hash);
-  //   return {hash: hash.toString(), receivers: [...receivers], err: 0, message: undefined};
-  // }
+}
 
+interface ExReceipt {
+  hash: string;
+  eRing: BalanceReceipt[],
+  eKton: BalanceReceipt[],
+}
 
+interface BalanceReceipt {
+  address: string;
+  value: number;
 }
 
 interface TransferredData {
