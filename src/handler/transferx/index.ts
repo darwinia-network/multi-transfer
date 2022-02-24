@@ -68,21 +68,21 @@ export class TransferxHandler {
       .filter(item => item.err == 0)
       .toArray();
     console.log('------- FAILED');
-    const failedOutput = [];
+    let failedOutput = '';
     Stream(faileds)
       .forEach(item => {
         const {message, receivers} = item;
         if (receivers.length != 0) {
           receivers.forEach(receiver => {
             console.log(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${colors.red(message)}`);
-            failedOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
           });
+          failedOutput = this.betterOutputCsvRows(receivers);
         } else {
           console.log(colors.red(message));
         }
       })
     console.log('------- OK');
-    const okOutput = [];
+    let okOutput = '';
     Stream(oks)
       .forEach(item => {
         const {
@@ -91,13 +91,13 @@ export class TransferxHandler {
         } = item;
         receivers.forEach(receiver => {
           console.log(colors.green(`[${receiver.coin}] -> ${receiver.address} [${receiver.amount}]: ${hash}`));
-          okOutput.push([receiver.address, receiver.coin, receiver.amount, receiver.format].join(','));
         });
+        okOutput = this.betterOutputCsvRows(receivers);
       });
-    // await fs.writeFile('fail.csv', failedOutput.join('\n'));
+    // await fs.writeFile('fail.csv', failedOutput);
     console.log(colors.yellow('Accounts failed transferred are written to the fail.csv file'));
 
-    // await fs.writeFile('ok.csv', okOutput.join('\n'));
+    // await fs.writeFile('ok.csv', okOutput);
     console.log(colors.yellow('Accounts successfully transferred are written to the ok.csv file'));
   }
 
@@ -113,6 +113,17 @@ export class TransferxHandler {
     return new Keyring({
       type: 'sr25519',
     }).addFromUri(this.seed);
+  }
+
+  private betterOutputCsvRows(
+    data: TransferReceiver[],
+    columnsSplitBy = ',',
+    rowsSplitBy = '\n',
+  ): string {
+    return Stream(data)
+      .map(receiver => [receiver.address, receiver.coin, receiver.amount, receiver.format].join(columnsSplitBy))
+      // .toArray()
+      .join(rowsSplitBy);
   }
 
   private async transfer(): Promise<TransferredData[]> {
@@ -152,7 +163,7 @@ export class TransferxHandler {
         };
       })
       .toArray();
-    const parts = helpers.splitArray(allReceivers, 100);
+    const parts = helpers.splitArray(allReceivers, 3);
 
 
     const rets: TransferredData[] = [];
@@ -218,18 +229,21 @@ export class TransferxHandler {
           console.log(`[${seq}/${total}] hash: ${colors.cyan(sentTx.hash)}`);
 
           if (okRing.length === 0 && okKton.length === 0) {
-            await fs.appendFile('ok.csv', batches.join('\n'));
+            await fs.appendFile('ok.csv', this.betterOutputCsvRows(batches));
+            await fs.appendFile('ok.csv', '\n\n');
             rets.push({err: 0, hash: sentTx.hash, message: undefined, receivers: batches});
           }
 
           if (okRing.length > 0) {
             console.log(colors.yellow(`[${seq}/${total}] Failed transfer ring`));
-            await fs.appendFile('fail.csv', okRing.join('\n'));
+            await fs.appendFile('fail.csv', this.betterOutputCsvRows(okRing));
+            await fs.appendFile('fail.csv', '\n\n');
             rets.push({err: 1, hash: sentTx.hash, message: `[${seq}/${total}] Failed transfer ring`, receivers: okRing});
           }
           if(okKton.length > 0) {
             console.log(colors.yellow(`[${seq}/${total}] Failed transfer kton`));
-            await fs.appendFile('fail.csv', okKton.join('\n'));
+            await fs.appendFile('fail.csv', this.betterOutputCsvRows(okKton));
+            await fs.appendFile('fail.csv', '\n\n');
             rets.push({err: 1, hash: sentTx.hash, message: `[${seq}/${total}] Failed transfer kton`, receivers: okKton});
           }
 
