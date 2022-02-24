@@ -11,7 +11,7 @@ const transferxCommand: yargs.CommandModule = {
       .positional('endpoint', {
         alias: 'e',
         describe: 'The endpoint of chain',
-        default: 'https://pangolin-rpc.darwinia.network',
+        default: 'wss://pangolin-rpc.darwinia.network',
         type: 'string',
       })
       .positional('seed', {
